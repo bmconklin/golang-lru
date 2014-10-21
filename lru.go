@@ -95,7 +95,7 @@ func (c *Cache) Remove(key interface{}) {
 }
 
 // Specify a function to run before deleting an item from the cache
-func (c *Cache) OnRemove(f func(value interface{})) {
+func (c *Cache) OnRemove(f func(interface{})) {
 	c.onRemove = f
 }
 
@@ -110,10 +110,8 @@ func (c *Cache) RemoveOldest() {
 func (c *Cache) removeOldest() {
 	ent := c.evictList.Back()
 	if ent != nil {
-		if val, ok := c.Get(ent); ok {
-			c.onRemove(val)
-		}
-		c.removeElement(ent)
+	    c.onRemove(ent.Value.(*entry).value)
+	    c.removeElement(ent)
 	}
 }
 
