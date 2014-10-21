@@ -47,7 +47,7 @@ func (c *Cache) Purge() {
 	c.lock.Lock()
 	defer c.lock.Unlock()            
 	for c.Len() > 0 {
-        c.RemoveOldest()
+        c.removeOldest()
     }
 	c.items = nil
 	c.items = make(map[interface{}]*list.Element, c.size)
