@@ -90,8 +90,6 @@ func (c *Cache) Add(key, value interface{}) {
 }
 
 func (c *Cache) Update(key interface{}, f func(val interface{}) interface{}) bool {
-	c.lock.Lock()
-	defer c.lock.Unlock()
 
 	ent, ok := c.items[key]
 	if !ok {
@@ -99,6 +97,8 @@ func (c *Cache) Update(key interface{}, f func(val interface{}) interface{}) boo
 	}
 	ent.Value.(*entry).value = f(ent.Value.(*entry).value)
 
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	c.evictList.MoveToFront(ent)
 	return true
 }
