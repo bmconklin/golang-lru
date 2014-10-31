@@ -98,7 +98,7 @@ func (c *Cache) Update(key interface{}, f func(val interface{})) bool {
 	}
 	f(ent.Value.(*entry).value)
 
-	c.evictList.MoveToFront(ent)
+	//c.evictList.MoveToFront(ent)
 	return true
 }
 
