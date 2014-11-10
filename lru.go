@@ -90,6 +90,8 @@ func (c *Cache) Add(key, value interface{}) {
 }
 
 func (c *Cache) Update(key interface{}, f func(val interface{})) bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 	ent, ok := c.items[key]
 	if !ok {
 		return false
@@ -145,7 +147,7 @@ func (c *Cache) removeOldest() {
 func (c *Cache) removeElement(e *list.Element) {
 	c.evictList.Remove(e)
 	kv := e.Value.(*entry)
-        c.items[kv.key] = nil  // force garbage collection
+    c.items[kv.key] = nil  // force garbage collection
 	delete(c.items, kv.key)
 }
 
