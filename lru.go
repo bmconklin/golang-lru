@@ -136,8 +136,8 @@ func (c *Cache) RemoveOldest() {
 func (c *Cache) removeOldest() {
 	ent := c.evictList.Back()
 	if ent != nil {
-	    c.onRemove(ent.Value.(*entry).value)
 	    c.removeElement(ent)
+	    c.onRemove(ent.Value.(*entry).value)
 	}
 }
 
