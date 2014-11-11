@@ -90,8 +90,6 @@ func (c *Cache) Add(key, value interface{}) {
 }
 
 func (c *Cache) Update(key interface{}, f func(val interface{})) bool {
-	c.lock.Lock()
-	defer c.lock.Unlock()
 	ent, ok := c.items[key]
 	if !ok {
 		return false
