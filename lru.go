@@ -4,53 +4,57 @@
 package lru
 
 import (
-	"container/list"
-	"errors"
-	"sync"
-	"time"
+    "container/list"
+    "errors"
+    "sync"
+    "time"
+    "log"
+    "github.com/boltdb/bolt"
 )
 
 // Cache is a thread-safe fixed size LRU cache.
 type Cache struct {
-	size      int
-	evictList *list.List
-	items     map[interface{}]*list.Element
-	lock      sync.Mutex
-	onRemove  func(interface{})
+    size      int
+    evictList *list.List
+    lock      sync.Mutex
+    onRemove  func(interface{})
+    db        *bolt.DB
 }
 
 // entry is used to hold a value in the evictList
 type entry struct {
-	key   interface{}
-	value interface{}
+    key   interface{}
+    value interface{}
 }
 
 // New creates an LRU of the given size
 func New(size int) (*Cache, error) {
-	if size <= 0 {
-		return nil, errors.New("Must provide a positive size")
-	}
-	onRemove := func(val interface{}) {
-		return
-	}
-	c := &Cache{
-		size:      size,
-		evictList: list.New(),
-		items:     make(map[interface{}]*list.Element, size),
-		onRemove:  onRemove,
-	}
-	return c, nil
+    if size <= 0 {
+        return nil, errors.New("Must provide a positive size")
+    }
+    onRemove := func(val interface{}) {
+        return
+    }
+    db, err := bolt.Open("my.db", 0600, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+    c := &Cache{
+        size:      size,
+        evictList: list.New(),
+        onRemove:  onRemove,
+        db:        db,
+    }
+    return c, nil
 }
 
 // Purge is used to completely clear the cache
 func (c *Cache) Purge() {
-	c.lock.Lock()
-	defer c.lock.Unlock()            
-	for c.Len() > 0 {
+    c.lock.Lock()
+    defer c.lock.Unlock()            
+    for c.Len() > 0 {
         c.removeOldest()
     }
-	c.items = nil
-	c.items = make(map[interface{}]*list.Element, c.size)
 }
 
 // Schedule routine purges. May be used to free up memory or 
@@ -67,91 +71,146 @@ func (cache *Cache) ScheduleClear(d time.Duration) {
 }
 
 // Add adds a value to the cache.
-func (c *Cache) Add(key, value interface{}) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+func (c *Cache) Add(bucket, key string, value interface{}) {
+    c.lock.Lock()
+    defer c.lock.Unlock()
+    // Check for existing item
+    if err := c.db.View(func(tx *bolt.Tx) error {
+        v := tx.Bucket([]byte(bucket)).Get([]byte(key))
+        if len(v) > 0 {
+            return errors.New("Duplicate Key.")
+        }
+        return nil
+    }); err != nil {
+        log.Println(err)
+    }
 
-	// Check for existing item
-	if ent, ok := c.items[key]; ok {
-		c.evictList.MoveToFront(ent)
-		ent.Value.(*entry).value = value
-		return
-	}
+    // Add new item
+    ent := &entry{key, value}
+    c.evictList.PushFront(ent)
+    if err := c.db.Update(func(tx *bolt.Tx) error {
+            b, err := tx.CreateBucketIfNotExists([]byte(bucket))
+            if err != nil {
+                log.Println(err)
+                return err
+            }
+            if b.Put([]byte(key), value.([]byte)); err != nil {
+                return err
+            }
+            return nil
+        }); err != nil {
+            log.Println(err)
+            return
+        }
 
-	// Add new item
-	ent := &entry{key, value}
-	entry := c.evictList.PushFront(ent)
-	c.items[key] = entry
-
-	// Verify size not exceeded
-	if c.evictList.Len() > c.size {
-		c.removeOldest()
-	}
+    // Verify size not exceeded
+    if c.evictList.Len() > c.size {
+        c.removeOldest()
+    }
 }
 
-func (c *Cache) Update(key interface{}, f func(val interface{})) bool {
-	ent, ok := c.items[key]
-	if !ok {
-		return false
-	}
-	f(ent.Value.(*entry).value)
-	return true
+func (c *Cache) Update(bucket, key string, f func(val interface{})) bool {
+    c.lock.Lock()
+    defer c.lock.Unlock()
+    var v interface{}
+    if err := c.db.View(func(tx *bolt.Tx) error {
+            value := tx.Bucket([]byte(bucket)).Get([]byte(key))
+            if len(value) == 0 {
+                return errors.New("No item found")
+            }
+            v = interface{}(value)
+            return nil
+        }); err != nil {
+            return false
+        }
+    f(v)
+
+    if err := c.db.Update(func(tx *bolt.Tx) error {
+            if err := tx.Bucket([]byte(bucket)).Put([]byte(key), v.([]byte)); err != nil {
+                return err
+            }
+            return nil
+        }); err != nil {
+            log.Println(err)
+            return false
+        }
+
+    return true
 }
 
 // Get looks up a key's value from the cache.
-func (c *Cache) Get(key interface{}) (value interface{}, ok bool) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	if ent, ok := c.items[key]; ok {
-		c.evictList.MoveToFront(ent)
-		return ent.Value.(*entry).value, true
-	}
-	return
+func (c *Cache) Get(bucket, key string) (value interface{}, ok bool) {
+    if err := c.db.View(func(tx *bolt.Tx) error {
+            v := tx.Bucket([]byte(bucket)).Get([]byte(key))
+            if len(v) == 0 {
+                return errors.New("No item found")
+            }
+            value = interface{}(v)
+            ok = true
+            return nil
+        }); err != nil {
+            return
+        }
+    return
 }
 
 // Remove removes the provided key from the cache.
 func (c *Cache) Remove(key interface{}) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+    c.lock.Lock()
+    defer c.lock.Unlock()
 
-	if ent, ok := c.items[key]; ok {
-		c.removeElement(ent)
-	}
+    if ent, ok := c.Get("url", key.(string)); ok {
+        c.removeElement(ent.(*list.Element))
+    }
 }
 
 // Specify a function to run before deleting an item from the cache
 func (c *Cache) OnRemove(f func(interface{})) {
-	c.onRemove = f
+    c.onRemove = f
 }
 
 // RemoveOldest removes the oldest item from the cache.
 func (c *Cache) RemoveOldest() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.removeOldest()
+    c.lock.Lock()
+    defer c.lock.Unlock()
+    c.removeOldest()
 }
 
 // removeOldest removes the oldest item from the cache.
 func (c *Cache) removeOldest() {
-	ent := c.evictList.Back()
-	if ent != nil {
-	    c.removeElement(ent)
-	    c.onRemove(ent.Value.(*entry).value)
-	}
+    ent := c.evictList.Back()
+    if ent != nil {
+        c.removeElement(ent)
+        var v interface{}
+        if err := c.db.View(func(tx *bolt.Tx) error {
+                value := tx.Bucket([]byte("url")).Get(ent.Value.([]byte))
+                if len(value) == 0 {
+                    return errors.New("No item found")
+                }
+                v = interface{}(value)
+                return nil
+            }); err != nil {
+                return
+            }
+        c.onRemove(v)
+    }
 }
 
 // removeElement is used to remove a given list element from the cache
 func (c *Cache) removeElement(e *list.Element) {
-	c.evictList.Remove(e)
-	kv := e.Value.(*entry)
-    c.items[kv.key] = nil  // force garbage collection
-	delete(c.items, kv.key)
+    c.evictList.Remove(e)
+    kv := e.Value.(*entry)
+    if err := c.db.Update(func(tx *bolt.Tx) error {
+            return tx.Bucket([]byte("url")).Delete(kv.key.([]byte))
+        }); err != nil {
+        log.Println(err)
+            return
+        }
 }
 
 // Len returns the number of items in the cache.
 func (c *Cache) Len() int {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	return c.evictList.Len()
+    c.lock.Lock()
+    defer c.lock.Unlock()
+    return c.evictList.Len()
 }
